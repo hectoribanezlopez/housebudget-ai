@@ -10,10 +10,10 @@ export default function LoginPage() {
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault()
-    await supabase.auth.signInWithOtp({
-      email,
-      options: { emailRedirectTo: `${location.origin}/` }
-    })
+   await supabase.auth.signInWithOtp({
+  email,
+  options: { emailRedirectTo: `${location.origin}/auth/callback` } // <-- antes era '/'
+})
     setSent(true)
   }
 
