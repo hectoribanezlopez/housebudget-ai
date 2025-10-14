@@ -1,21 +1,67 @@
-// =============================================================
-// HouseBudget AI — Auth (Supabase) + Cloud Sync + Import local
-// =============================================================
-// Este documento incluye varios archivos. Cópialos en tu proyecto:
-//
-// 1) app/page.tsx                → Página principal (actualizada con login/logout, sync Supabase e importación)
-// 2) lib/supabase.ts             → Cliente de Supabase (navegador)
-// 3) app/login/page.tsx          → Pantalla de login por Magic Link (email)
-// 4) supabase_policies.sql       → Políticas RLS para proteger tus tablas en Supabase
-//
-// Recuerda añadir estas variables en .env.local (y en Vercel):
-//   NEXT_PUBLIC_SUPABASE_URL=...
-//   NEXT_PUBLIC_SUPABASE_ANON_KEY=...
-// =============================================================
+# HouseBudget AI — Fix build (Next.js con `/src`)
 
-// =====================================
-// FILE: app/page.tsx
-// =====================================
+A continuación tienes **tres archivos separados** para que el build en Vercel funcione. Tu proyecto usa `src/`, así que coloca cada archivo exactamente en la ruta indicada.
+
+---
+
+## 1) `src/lib/supabase.ts`
+```ts
+// src/lib/supabase.ts
+import { createBrowserClient } from '@supabase/ssr'
+
+export function supabaseBrowser() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL!
+  const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  return createBrowserClient(url, anon)
+}
+```
+
+---
+
+## 2) `src/app/login/page.tsx`
+```tsx
+// src/app/login/page.tsx
+'use client'
+
+import { useState } from 'react'
+import { supabaseBrowser } from '@/lib/supabase'
+
+export default function LoginPage() {
+  const [email, setEmail] = useState('')
+  const [sent, setSent] = useState(false)
+  const supabase = supabaseBrowser()
+
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    await supabase.auth.signInWithOtp({
+      email,
+      options: { emailRedirectTo: `${location.origin}/` }
+    })
+    setSent(true)
+  }
+
+  return (
+    <div className="max-w-sm mx-auto p-6 space-y-4">
+      <h1 className="text-xl font-bold">Inicia sesión</h1>
+      {sent ? (
+        <p>Te hemos enviado un enlace de acceso a <strong>{email}</strong>. Revisa tu correo.</p>
+      ) : (
+        <form onSubmit={onSubmit} className="space-y-3">
+          <input className="border rounded w-full p-2" type="email" required placeholder="tu@email"
+            value={email} onChange={(e)=>setEmail(e.target.value)} />
+          <button className="px-3 py-2 rounded bg-black text-white w-full">Enviar enlace</button>
+        </form>
+      )}
+    </div>
+  )
+}
+```
+
+---
+
+## 3) `src/app/page.tsx`
+```tsx
+// src/app/page.tsx
 'use client'
 
 import React, { useEffect, useMemo, useState, useCallback } from 'react'
@@ -27,7 +73,7 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Trash2, Plus, Download, RefreshCw, LogIn, LogOut, Upload } from 'lucide-react'
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts'
-import type { ValueType, NameType } from 'recharts/types/component/DefaultTooltipContent'
+import type { ValueType } from 'recharts/types/component/DefaultTooltipContent'
 import { supabaseBrowser } from '@/lib/supabase'
 
 // -----------------------------
@@ -45,9 +91,7 @@ function currency(n: number) {
   return n.toLocaleString('es-ES', { style: 'currency', currency: 'EUR' })
 }
 
-function uid() {
-  return Math.random().toString(36).slice(2, 9)
-}
+function uid() { return Math.random().toString(36).slice(2, 9) }
 
 const DEFAULT_INCOMES: Entry[] = [
   { id: uid(), type: 'income', name: 'Nómina 1', amount: 1800, category: 'Salario' },
@@ -71,7 +115,7 @@ type PersistedState = {
 
 const defaultState: PersistedState = {
   entries: [...DEFAULT_INCOMES, ...DEFAULT_EXPENSES],
-  inflationPct: 0.2, // 0.2% mensual (~2.4% anual aprox)
+  inflationPct: 0.2,
   horizonMonths: 12,
   startingBalance: 0,
 }
@@ -88,7 +132,6 @@ function computeForecast(
   let expense = monthlyExpense
   let balance = startingBalance
   const now = new Date()
-
   for (let i = 0; i < Math.max(1, horizonMonths); i++) {
     const d = new Date(now.getFullYear(), now.getMonth() + i, 1)
     const label = d.toLocaleDateString('es-ES', { month: 'short', year: '2-digit' })
@@ -125,9 +168,7 @@ export default function HouseBudgetApp() {
   const [userId, setUserId] = useState<string | null>(null)
   const supabase = supabaseBrowser()
 
-  // -----------------------------
-  // AUTH: detectar usuario y suscribir a cambios
-  // -----------------------------
+  // Auth state
   useEffect(() => {
     let mounted = true
     ;(async () => {
@@ -137,15 +178,10 @@ export default function HouseBudgetApp() {
     const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
       setUserId(session?.user?.id ?? null)
     })
-    return () => {
-      mounted = false
-      sub.subscription.unsubscribe()
-    }
+    return () => { mounted = false; sub.subscription.unsubscribe() }
   }, [supabase])
 
-  // -----------------------------
-  // LOAD: desde Supabase si hay login; si no, localStorage
-  // -----------------------------
+  // Load entries (Supabase if logged, else local)
   const loadEntries = useCallback(async () => {
     if (userId) {
       const { data, error } = await supabase
@@ -154,30 +190,29 @@ export default function HouseBudgetApp() {
         .eq('user_id', userId)
         .order('created_at', { ascending: true })
       if (!error && data) {
-        setState(s => ({ ...s, entries: data.map(r => ({ id: r.id as string, type: r.type as 'income'|'expense', name: r.name as string, category: (r.category ?? 'General') as string, amount: Number(r.amount) })) }))
+        setState(s => ({
+          ...s,
+          entries: data.map(r => ({ id: String(r.id), type: r.type as 'income'|'expense', name: String(r.name), category: String(r.category ?? 'General'), amount: Number(r.amount) }))
+        }))
         return
       }
     }
-    // fallback local
     try {
       const raw = localStorage.getItem(STORAGE_KEY)
-      if (raw) {
-        const saved = JSON.parse(raw) as PersistedState
-        setState(saved)
-      }
+      if (raw) setState(JSON.parse(raw) as PersistedState)
     } catch {}
   }, [userId, supabase])
 
   useEffect(() => { loadEntries() }, [loadEntries])
 
-  // Guardar en localStorage solo si NO hay usuario (modo invitado)
+  // Persist local only for guests
   useEffect(() => {
     if (!userId) {
       try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)) } catch {}
     }
   }, [state, userId])
 
-  // Derivados
+  // Derived
   const incomes = useMemo(() => state.entries.filter(e => e.type === 'income'), [state.entries])
   const expenses = useMemo(() => state.entries.filter(e => e.type === 'expense'), [state.entries])
   const monthlyIncome = useMemo(() => incomes.reduce((s, e) => s + (e.amount || 0), 0), [incomes])
@@ -187,18 +222,15 @@ export default function HouseBudgetApp() {
   const total12mNet = useMemo(() => forecast.reduce((s, r) => s + r.net, 0), [forecast])
   const breakEvenMonth = useMemo(() => forecast.findIndex(r => r.balance < 0), [forecast])
 
-  // CRUD entries: Supabase si hay login; local en caso contrario
+  // CRUD
   async function addEntry() {
     if (!newEntry.name || !isFinite(newEntry.amount)) return
     if (userId) {
       const { error } = await supabase.from('entries').insert({ user_id: userId, type: newEntry.type, name: newEntry.name, category: newEntry.category, amount: newEntry.amount })
-      if (!error) {
-        setNewEntry({ type: newEntry.type, name: '', amount: 0, category: 'General' })
-        await loadEntries()
-      }
+      if (!error) { setNewEntry({ ...newEntry, name: '', amount: 0 }); await loadEntries() }
     } else {
       setState(s => ({ ...s, entries: [...s.entries, { ...newEntry, id: uid(), amount: Math.max(0, Number(newEntry.amount)) }] }))
-      setNewEntry({ type: newEntry.type, name: '', amount: 0, category: 'General' })
+      setNewEntry({ ...newEntry, name: '', amount: 0 })
     }
   }
 
@@ -211,27 +243,21 @@ export default function HouseBudgetApp() {
     }
   }
 
-  function resetAll() {
-    setState(defaultState)
-  }
+  function resetAll() { setState(defaultState) }
 
   function downloadCSV() {
     const csv = generateCSV(state, forecast)
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
-    a.href = url
-    a.download = 'housebudget_forecast.csv'
-    a.click()
-    URL.revokeObjectURL(url)
+    a.href = url; a.download = 'housebudget_forecast.csv'; a.click(); URL.revokeObjectURL(url)
   }
 
-  function tooltipCurrencyFormatter(value: ValueType, _name: NameType): string {
+  function tooltipCurrencyFormatter(value: ValueType): string {
     const num = typeof value === 'number' ? value : Number(value)
     return currency(num)
   }
 
-  // Importar datos locales → Supabase (cuando hay login)
   const importFromLocal = async () => {
     if (!userId) return
     try {
@@ -241,11 +267,7 @@ export default function HouseBudgetApp() {
       if (!saved?.entries?.length) return
       const rows = saved.entries.map(e => ({ user_id: userId, type: e.type, name: e.name, category: e.category, amount: e.amount }))
       const { error } = await supabase.from('entries').insert(rows)
-      if (!error) {
-        // opcional: limpiar local para evitar duplicados futuros
-        // localStorage.removeItem(STORAGE_KEY)
-        await loadEntries()
-      }
+      if (!error) await loadEntries()
     } catch {}
   }
 
@@ -439,105 +461,16 @@ function SmartSummary({ forecast, monthlyIncome, monthlyExpense, inflationPct }:
     </div>
   )
 }
+```
 
-// -----------------------------
-// Lightweight runtime tests (dev only)
-// -----------------------------
-function assert(condition: boolean, message: string) { if (!condition) throw new Error('Test failed: ' + message) }
-function runInternalTests() {
-  try {
-    const f1 = computeForecast(1000, 800, 0, 3, 0)
-    assert(f1.length === 3, 'forecast length should equal horizonMonths')
-    assert(Math.round(f1[2].balance) === 600, 'balance after 3 months should be 600 when net=200')
-    const f2 = computeForecast(1000, 100, 10, 2, 0)
-    assert(f2[1].expense > f2[0].expense, 'expense should grow with inflation')
-  } catch (e) { console.error(e) }
-}
-if (typeof window !== 'undefined' && process.env.NODE_ENV !== 'production') runInternalTests()
+---
 
-
-// =====================================
-// FILE: lib/supabase.ts
-// =====================================
-export { }
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore - este archivo debe guardarse como lib/supabase.ts en tu proyecto
-export const __FILE__SHOULD_BE__lib_supabase_ts = `
-import { createBrowserClient } from '@supabase/ssr'
-
-export function supabaseBrowser() {
-  return createBrowserClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  )
-}
-` as unknown as void
-
-
-// =====================================
-// FILE: app/login/page.tsx
-// =====================================
-export { }
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore - este archivo debe guardarse como app/login/page.tsx en tu proyecto
-export const __FILE__SHOULD_BE__app_login_page_tsx = `
-'use client'
-import { useState } from 'react'
-import { supabaseBrowser } from '@/lib/supabase'
-
-export default function LoginPage() {
-  const [email, setEmail] = useState('')
-  const [sent, setSent] = useState(false)
-  const supabase = supabaseBrowser()
-
-  async function onSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    await supabase.auth.signInWithOtp({
-      email,
-      options: { emailRedirectTo: \`\${location.origin}/\` }
-    })
-    setSent(true)
-  }
-
-  return (
-    <div className="max-w-sm mx-auto p-6 space-y-4">
-      <h1 className="text-xl font-bold">Inicia sesión</h1>
-      {sent ? (
-        <p>Te hemos enviado un enlace de acceso a <strong>{email}</strong>. Revisa tu correo.</p>
-      ) : (
-        <form onSubmit={onSubmit} className="space-y-3">
-          <input className="border rounded w-full p-2" type="email" required placeholder="tu@email"
-            value={email} onChange={(e)=>setEmail(e.target.value)} />
-          <button className="px-3 py-2 rounded bg-black text-white w-full">Enviar enlace</button>
-        </form>
-      )}
-    </div>
-  )
-}
-` as unknown as void
-
-
-// =====================================
-// FILE: supabase_policies.sql
-// =====================================
-export { }
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore - este archivo debe guardarse como supabase_policies.sql (se ejecuta en el SQL editor de Supabase)
-export const __FILE__SHOULD_BE__supabase_policies_sql = `
--- Activar RLS
-alter table public.entries enable row level security;
-alter table public.profiles enable row level security;
-
--- El usuario solo ve/scribe sus propias filas
-create policy if not exists "entries_select_own" on public.entries
-  for select using ( auth.uid() = user_id );
-create policy if not exists "entries_insert_own" on public.entries
-  for insert with check ( auth.uid() = user_id );
-create policy if not exists "entries_delete_own" on public.entries
-  for delete using ( auth.uid() = user_id );
-
-create policy if not exists "profiles_select_own" on public.profiles
-  for select using ( auth.uid() = id );
-create policy if not exists "profiles_insert_self" on public.profiles
-  for insert with check ( auth.uid() = id );
-` as unknown as void
+### Importante
+- **Crea/actualiza exactamente estos 3 archivos en esas rutas.**
+- El warning de ESLint por `_name` ya no debería salir porque he eliminado ese parámetro.
+- Si tu proyecto no tiene los componentes de shadcn, recuerda añadirlos:
+  ```bash
+  npx shadcn@latest init
+  npx shadcn@latest add button card input label select
+  ```
+- Asegúrate de que tus variables de entorno ya están puestas en Vercel (Development/Preview/Production) y haz **Redeploy**.
