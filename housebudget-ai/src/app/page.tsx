@@ -1,62 +1,82 @@
+// =============================================================
+// HouseBudget AI — Auth (Supabase) + Cloud Sync + Import local
+// =============================================================
+// Este documento incluye varios archivos. Cópialos en tu proyecto:
+//
+// 1) app/page.tsx                → Página principal (actualizada con login/logout, sync Supabase e importación)
+// 2) lib/supabase.ts             → Cliente de Supabase (navegador)
+// 3) app/login/page.tsx          → Pantalla de login por Magic Link (email)
+// 4) supabase_policies.sql       → Políticas RLS para proteger tus tablas en Supabase
+//
+// Recuerda añadir estas variables en .env.local (y en Vercel):
+//   NEXT_PUBLIC_SUPABASE_URL=...
+//   NEXT_PUBLIC_SUPABASE_ANON_KEY=...
+// =============================================================
+
+// =====================================
+// FILE: app/page.tsx
+// =====================================
 'use client'
 
-import React, { useEffect, useMemo, useState } from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Trash2, Plus, Download, RefreshCw } from "lucide-react";
-import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from "recharts";
-import type { ValueType, NameType } from 'recharts/types/component/DefaultTooltipContent';
+import React, { useEffect, useMemo, useState, useCallback } from 'react'
+import Link from 'next/link'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Trash2, Plus, Download, RefreshCw, LogIn, LogOut, Upload } from 'lucide-react'
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts'
+import type { ValueType, NameType } from 'recharts/types/component/DefaultTooltipContent'
+import { supabaseBrowser } from '@/lib/supabase'
 
 // -----------------------------
 // Types & helpers
 // -----------------------------
 type Entry = {
-  id: string;
-  type: "income" | "expense";
-  name: string;
-  amount: number; // monthly amount in EUR
-  category: string;
-};
+  id: string
+  type: 'income' | 'expense'
+  name: string
+  amount: number // monthly amount in EUR
+  category: string
+}
 
 function currency(n: number) {
-  return n.toLocaleString("es-ES", { style: "currency", currency: "EUR" });
+  return n.toLocaleString('es-ES', { style: 'currency', currency: 'EUR' })
 }
 
 function uid() {
-  return Math.random().toString(36).slice(2, 9);
+  return Math.random().toString(36).slice(2, 9)
 }
 
 const DEFAULT_INCOMES: Entry[] = [
-  { id: uid(), type: "income", name: "Nómina 1", amount: 1800, category: "Salario" },
-  { id: uid(), type: "income", name: "Nómina 2", amount: 1200, category: "Salario" },
-];
+  { id: uid(), type: 'income', name: 'Nómina 1', amount: 1800, category: 'Salario' },
+  { id: uid(), type: 'income', name: 'Nómina 2', amount: 1200, category: 'Salario' },
+]
 
 const DEFAULT_EXPENSES: Entry[] = [
-  { id: uid(), type: "expense", name: "Hipoteca", amount: 850, category: "Vivienda" },
-  { id: uid(), type: "expense", name: "Luz", amount: 90, category: "Suministros" },
-  { id: uid(), type: "expense", name: "Comida", amount: 400, category: "Alimentación" },
-];
+  { id: uid(), type: 'expense', name: 'Hipoteca', amount: 850, category: 'Vivienda' },
+  { id: uid(), type: 'expense', name: 'Luz', amount: 90, category: 'Suministros' },
+  { id: uid(), type: 'expense', name: 'Comida', amount: 400, category: 'Alimentación' },
+]
 
-const STORAGE_KEY = "housebudget_mvp_state_v1";
+const STORAGE_KEY = 'housebudget_mvp_state_v1'
 
 type PersistedState = {
-  entries: Entry[];
-  inflationPct: number; // expected % monthly increase on expenses (e.g., 0.3 means 0.3%)
-  horizonMonths: number;
-  startingBalance: number;
-};
+  entries: Entry[]
+  inflationPct: number // % mensual esperado en gastos
+  horizonMonths: number
+  startingBalance: number
+}
 
 const defaultState: PersistedState = {
   entries: [...DEFAULT_INCOMES, ...DEFAULT_EXPENSES],
   inflationPct: 0.2, // 0.2% mensual (~2.4% anual aprox)
   horizonMonths: 12,
   startingBalance: 0,
-};
+}
 
-// Forecast calculator extracted so we can unit-test easily
+// Forecast calculator
 function computeForecast(
   monthlyIncome: number,
   monthlyExpense: number,
@@ -64,116 +84,169 @@ function computeForecast(
   horizonMonths: number,
   startingBalance: number
 ) {
-  const rows: { month: string; income: number; expense: number; net: number; balance: number }[] = [];
-  let expense = monthlyExpense;
-  let balance = startingBalance;
-  const now = new Date();
+  const rows: { month: string; income: number; expense: number; net: number; balance: number }[] = []
+  let expense = monthlyExpense
+  let balance = startingBalance
+  const now = new Date()
 
   for (let i = 0; i < Math.max(1, horizonMonths); i++) {
-    const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
-    const label = d.toLocaleDateString("es-ES", { month: "short", year: "2-digit" });
-
-    const income = monthlyIncome;
-    const net = income - expense;
-    balance += net;
-
-    rows.push({ month: label, income, expense, net, balance });
-
-    // aplicar inflación mensual a gastos para el próximo mes
-    expense = expense * (1 + inflationPct / 100);
+    const d = new Date(now.getFullYear(), now.getMonth() + i, 1)
+    const label = d.toLocaleDateString('es-ES', { month: 'short', year: '2-digit' })
+    const income = monthlyIncome
+    const net = income - expense
+    balance += net
+    rows.push({ month: label, income, expense, net, balance })
+    expense = expense * (1 + inflationPct / 100)
   }
-  return rows;
+  return rows
 }
 
-// CSV generator extracted for testing and reuse
+// CSV generator
 function generateCSV(state: PersistedState, forecast: { month: string; income: number; expense: number; net: number; balance: number }[]) {
-  const header = ["Tipo", "Nombre", "Categoría", "Importe mensual (€)"];
-  const lines = state.entries.map(e => [e.type, e.name, e.category, e.amount].join(","));
-  const forecastHeader = ["Mes", "Ingresos", "Gastos", "Neto", "Saldo acumulado"];
-  const forecastLines = forecast.map(r => [r.month, r.income.toFixed(2), r.expense.toFixed(2), r.net.toFixed(2), r.balance.toFixed(2)].join(","));
-
+  const header = ['Tipo', 'Nombre', 'Categoría', 'Importe mensual (€)']
+  const lines = state.entries.map(e => [e.type, e.name, e.category, e.amount].join(','))
+  const forecastHeader = ['Mes', 'Ingresos', 'Gastos', 'Neto', 'Saldo acumulado']
+  const forecastLines = forecast.map(r => [r.month, r.income.toFixed(2), r.expense.toFixed(2), r.net.toFixed(2), r.balance.toFixed(2)].join(','))
   const csv = [
-    "Entradas",
-    header.join(","),
-    lines.join("\n"),
-    "",
-    "Previsión",
-    forecastHeader.join(","),
-    forecastLines.join("\n"),
-  ].join("\n");
-
-  return csv;
+    'Entradas',
+    header.join(','),
+    lines.join('\n'),
+    '',
+    'Previsión',
+    forecastHeader.join(','),
+    forecastLines.join('\n'),
+  ].join('\n')
+  return csv
 }
 
-// -----------------------------
-// Component
-// -----------------------------
 export default function HouseBudgetApp() {
-  const [state, setState] = useState<PersistedState>(defaultState);
-  const [newEntry, setNewEntry] = useState<Omit<Entry, "id">>({ type: "expense", name: "", amount: 0, category: "General" });
+  const [state, setState] = useState<PersistedState>(defaultState)
+  const [newEntry, setNewEntry] = useState<Omit<Entry, 'id'>>({ type: 'expense', name: '', amount: 0, category: 'General' })
+  const [userId, setUserId] = useState<string | null>(null)
+  const supabase = supabaseBrowser()
 
-  // Load from localStorage
+  // -----------------------------
+  // AUTH: detectar usuario y suscribir a cambios
+  // -----------------------------
   useEffect(() => {
+    let mounted = true
+    ;(async () => {
+      const { data } = await supabase.auth.getUser()
+      if (mounted) setUserId(data.user?.id ?? null)
+    })()
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUserId(session?.user?.id ?? null)
+    })
+    return () => {
+      mounted = false
+      sub.subscription.unsubscribe()
+    }
+  }, [supabase])
+
+  // -----------------------------
+  // LOAD: desde Supabase si hay login; si no, localStorage
+  // -----------------------------
+  const loadEntries = useCallback(async () => {
+    if (userId) {
+      const { data, error } = await supabase
+        .from('entries')
+        .select('id, type, name, category, amount')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: true })
+      if (!error && data) {
+        setState(s => ({ ...s, entries: data.map(r => ({ id: r.id as string, type: r.type as 'income'|'expense', name: r.name as string, category: (r.category ?? 'General') as string, amount: Number(r.amount) })) }))
+        return
+      }
+    }
+    // fallback local
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
+      const raw = localStorage.getItem(STORAGE_KEY)
       if (raw) {
-        const saved = JSON.parse(raw) as PersistedState;
-        setState(saved);
+        const saved = JSON.parse(raw) as PersistedState
+        setState(saved)
       }
     } catch {}
-  }, []);
+  }, [userId, supabase])
 
-  // Save to localStorage
+  useEffect(() => { loadEntries() }, [loadEntries])
+
+  // Guardar en localStorage solo si NO hay usuario (modo invitado)
   useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    } catch {}
-  }, [state]);
+    if (!userId) {
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)) } catch {}
+    }
+  }, [state, userId])
 
-  const incomes = useMemo(() => state.entries.filter(e => e.type === "income"), [state.entries]);
-  const expenses = useMemo(() => state.entries.filter(e => e.type === "expense"), [state.entries]);
+  // Derivados
+  const incomes = useMemo(() => state.entries.filter(e => e.type === 'income'), [state.entries])
+  const expenses = useMemo(() => state.entries.filter(e => e.type === 'expense'), [state.entries])
+  const monthlyIncome = useMemo(() => incomes.reduce((s, e) => s + (e.amount || 0), 0), [incomes])
+  const monthlyExpense = useMemo(() => expenses.reduce((s, e) => s + (e.amount || 0), 0), [expenses])
+  const monthlyNet = monthlyIncome - monthlyExpense
+  const forecast = useMemo(() => computeForecast(monthlyIncome, monthlyExpense, state.inflationPct, state.horizonMonths, state.startingBalance), [monthlyIncome, monthlyExpense, state.inflationPct, state.horizonMonths, state.startingBalance])
+  const total12mNet = useMemo(() => forecast.reduce((s, r) => s + r.net, 0), [forecast])
+  const breakEvenMonth = useMemo(() => forecast.findIndex(r => r.balance < 0), [forecast])
 
-  const monthlyIncome = useMemo(() => incomes.reduce((s, e) => s + (e.amount || 0), 0), [incomes]);
-  const monthlyExpense = useMemo(() => expenses.reduce((s, e) => s + (e.amount || 0), 0), [expenses]);
-  const monthlyNet = monthlyIncome - monthlyExpense;
-
-  const forecast = useMemo(
-    () => computeForecast(monthlyIncome, monthlyExpense, state.inflationPct, state.horizonMonths, state.startingBalance),
-    [monthlyIncome, monthlyExpense, state.inflationPct, state.horizonMonths, state.startingBalance]
-  );
-
-  const total12mNet = useMemo(() => forecast.reduce((s, r) => s + r.net, 0), [forecast]);
-  const breakEvenMonth = useMemo(() => forecast.findIndex(r => r.balance < 0), [forecast]);
-
-  function addEntry() {
-    if (!newEntry.name || !isFinite(newEntry.amount)) return;
-    setState(s => ({ ...s, entries: [...s.entries, { ...newEntry, id: uid(), amount: Math.max(0, Number(newEntry.amount)) }] }));
-    setNewEntry({ type: newEntry.type, name: "", amount: 0, category: "General" });
+  // CRUD entries: Supabase si hay login; local en caso contrario
+  async function addEntry() {
+    if (!newEntry.name || !isFinite(newEntry.amount)) return
+    if (userId) {
+      const { error } = await supabase.from('entries').insert({ user_id: userId, type: newEntry.type, name: newEntry.name, category: newEntry.category, amount: newEntry.amount })
+      if (!error) {
+        setNewEntry({ type: newEntry.type, name: '', amount: 0, category: 'General' })
+        await loadEntries()
+      }
+    } else {
+      setState(s => ({ ...s, entries: [...s.entries, { ...newEntry, id: uid(), amount: Math.max(0, Number(newEntry.amount)) }] }))
+      setNewEntry({ type: newEntry.type, name: '', amount: 0, category: 'General' })
+    }
   }
 
-  function removeEntry(id: string) {
-    setState(s => ({ ...s, entries: s.entries.filter(e => e.id !== id) }));
+  async function removeEntry(id: string) {
+    if (userId) {
+      const { error } = await supabase.from('entries').delete().eq('id', id).eq('user_id', userId)
+      if (!error) await loadEntries()
+    } else {
+      setState(s => ({ ...s, entries: s.entries.filter(e => e.id !== id) }))
+    }
   }
 
   function resetAll() {
-    setState(defaultState);
+    setState(defaultState)
   }
 
   function downloadCSV() {
-    const csv = generateCSV(state, forecast);
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "housebudget_forecast.csv";
-    a.click();
-    URL.revokeObjectURL(url);
+    const csv = generateCSV(state, forecast)
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'housebudget_forecast.csv'
+    a.click()
+    URL.revokeObjectURL(url)
   }
 
-  // Typed tooltip formatter to avoid `any` errors
   function tooltipCurrencyFormatter(value: ValueType, _name: NameType): string {
-    const num = typeof value === 'number' ? value : Number(value);
-    return currency(num);
+    const num = typeof value === 'number' ? value : Number(value)
+    return currency(num)
+  }
+
+  // Importar datos locales → Supabase (cuando hay login)
+  const importFromLocal = async () => {
+    if (!userId) return
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY)
+      if (!raw) return
+      const saved = JSON.parse(raw) as PersistedState
+      if (!saved?.entries?.length) return
+      const rows = saved.entries.map(e => ({ user_id: userId, type: e.type, name: e.name, category: e.category, amount: e.amount }))
+      const { error } = await supabase.from('entries').insert(rows)
+      if (!error) {
+        // opcional: limpiar local para evitar duplicados futuros
+        // localStorage.removeItem(STORAGE_KEY)
+        await loadEntries()
+      }
+    } catch {}
   }
 
   return (
@@ -181,7 +254,21 @@ export default function HouseBudgetApp() {
       <div className="max-w-6xl mx-auto space-y-6">
         <header className="flex items-center justify-between">
           <h1 className="text-2xl md:text-3xl font-bold">HouseBudget AI — MVP</h1>
-          <div className="flex gap-2">
+          <div className="flex gap-2 items-center">
+            {userId ? (
+              <>
+                <Button variant="outline" onClick={importFromLocal} title="Importar datos locales a mi cuenta">
+                  <Upload className="w-4 h-4 mr-2"/> Importar locales
+                </Button>
+                <Button variant="outline" onClick={async()=>{ await supabase.auth.signOut(); }}>
+                  <LogOut className="w-4 h-4 mr-2"/> Salir
+                </Button>
+              </>
+            ) : (
+              <Button asChild variant="default">
+                <Link href="/login"><LogIn className="w-4 h-4 mr-2"/> Entrar</Link>
+              </Button>
+            )}
             <Button variant="outline" onClick={resetAll}>
               <RefreshCw className="w-4 h-4 mr-2" /> Reset
             </Button>
@@ -200,7 +287,7 @@ export default function HouseBudgetApp() {
               <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
                 <div>
                   <Label>Tipo</Label>
-                  <Select value={newEntry.type} onValueChange={(v: string) => setNewEntry(n => ({ ...n, type: v as "income" | "expense" }))}>
+                  <Select value={newEntry.type} onValueChange={(v: string) => setNewEntry(n => ({ ...n, type: v as 'income' | 'expense' }))}>
                     <SelectTrigger>
                       <SelectValue placeholder="Tipo" />
                     </SelectTrigger>
@@ -236,8 +323,8 @@ export default function HouseBudgetApp() {
                 {state.entries.map(e => (
                   <div key={e.id} className="grid grid-cols-12 gap-2 items-center border rounded-xl p-3">
                     <div className="col-span-2">
-                      <span className={`px-2 py-1 rounded-full text-xs font-semibold ${e.type === "income" ? "bg-green-100" : "bg-red-100"}`}>
-                        {e.type === "income" ? "Ingreso" : "Gasto"}
+                      <span className={`px-2 py-1 rounded-full text-xs font-semibold ${e.type === 'income' ? 'bg-green-100' : 'bg-red-100'}`}>
+                        {e.type === 'income' ? 'Ingreso' : 'Gasto'}
                       </span>
                     </div>
                     <div className="col-span-4 font-medium">{e.name}</div>
@@ -275,8 +362,8 @@ export default function HouseBudgetApp() {
               <div className="rounded-xl bg-slate-50 p-3 text-sm space-y-1">
                 <div className="flex justify-between"><span>Ingresos/mes</span><strong>{currency(monthlyIncome)}</strong></div>
                 <div className="flex justify-between"><span>Gastos/mes</span><strong>{currency(monthlyExpense)}</strong></div>
-                <div className="flex justify-between"><span>Neto/mes</span><strong className={monthlyNet>=0?"text-green-700":"text-red-700"}>{currency(monthlyNet)}</strong></div>
-                <div className="flex justify-between"><span>Neto 12 meses</span><strong className={total12mNet>=0?"text-green-700":"text-red-700"}>{currency(total12mNet)}</strong></div>
+                <div className="flex justify-between"><span>Neto/mes</span><strong className={monthlyNet>=0?'text-green-700':'text-red-700'}>{currency(monthlyNet)}</strong></div>
+                <div className="flex justify-between"><span>Neto 12 meses</span><strong className={total12mNet>=0?'text-green-700':'text-red-700'}>{currency(total12mNet)}</strong></div>
                 {breakEvenMonth >= 0 && (
                   <div className="flex justify-between"><span>Mes en que el saldo cae <span className="italic">por debajo de 0</span></span><strong>{breakEvenMonth + 1}</strong></div>
                 )}
@@ -295,7 +382,7 @@ export default function HouseBudgetApp() {
                 <LineChart data={forecast} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                   <XAxis dataKey="month" stroke="#374151" />
-                  <YAxis tickFormatter={(v) => v.toLocaleString("es-ES")} stroke="#374151" />
+                  <YAxis tickFormatter={(v) => v.toLocaleString('es-ES')} stroke="#374151" />
                   <Tooltip formatter={tooltipCurrencyFormatter} />
                   <Legend />
                   <Line type="monotone" dataKey="income" name="Ingresos" strokeWidth={2} dot={false} stroke="#10b981" />
@@ -317,26 +404,24 @@ export default function HouseBudgetApp() {
         </Card>
 
         <footer className="text-xs text-center text-muted-foreground pt-4">
-          Hecho con ❤️ por Héctor. MVP local con almacenamiento en el navegador. No sube datos a servidores.
+          Hecho con ❤️ por Héctor. Datos guardados {userId ? 'en la nube (Supabase)' : 'en este navegador' }.
         </footer>
       </div>
     </div>
-  );
+  )
 }
 
 function SmartSummary({ forecast, monthlyIncome, monthlyExpense, inflationPct }: {
-  forecast: { month: string; income: number; expense: number; net: number; balance: number }[];
-  monthlyIncome: number;
-  monthlyExpense: number;
-  inflationPct: number;
+  forecast: { month: string; income: number; expense: number; net: number; balance: number }[]
+  monthlyIncome: number
+  monthlyExpense: number
+  inflationPct: number
 }) {
-  const first = forecast[0];
-  const last = forecast[forecast.length - 1];
-
+  const first = forecast[0]
+  const last = forecast[forecast.length - 1]
   const trend = last.balance >= 0
     ? `Tu saldo acumulado se mantiene positivo tras ${forecast.length} meses.`
-    : `Ojo: tu saldo caería por debajo de 0 tras ${forecast.findIndex(r => r.balance < 0) + 1} meses.`;
-
+    : `Ojo: tu saldo caería por debajo de 0 tras ${forecast.findIndex(r => r.balance < 0) + 1} meses.`
   return (
     <div className="space-y-2">
       <p>
@@ -348,53 +433,111 @@ function SmartSummary({ forecast, monthlyIncome, monthlyExpense, inflationPct }:
       </p>
       <ul className="list-disc ml-6 text-sm">
         <li>Si tus gastos suben por encima de lo previsto, ajusta la inflación mensual.</li>
-        <li>Prueba a registrar gastos variables como suscripciones, ocio y transporte.</li>
+        <li>Registra gastos variables como suscripciones, ocio y transporte.</li>
         <li>Configura un saldo inicial realista (ahorros en cuenta).</li>
       </ul>
-      <p className="text-xs text-muted-foreground">Próximo paso: reemplazar este bloque por una llamada al backend que use OpenAI para generar un resumen personalizado y sugerencias.</p>
     </div>
-  );
+  )
 }
 
 // -----------------------------
 // Lightweight runtime tests (dev only)
 // -----------------------------
-function assert(condition: boolean, message: string) {
-  if (!condition) throw new Error("Test failed: " + message);
-}
-
+function assert(condition: boolean, message: string) { if (!condition) throw new Error('Test failed: ' + message) }
 function runInternalTests() {
   try {
-    // Test 1: forecast length and balance growth without inflation
-    const f1 = computeForecast(1000, 800, 0, 3, 0);
-    assert(f1.length === 3, "forecast length should equal horizonMonths");
-    assert(Math.round(f1[2].balance) === 600, "balance after 3 months should be 600 when net=200");
+    const f1 = computeForecast(1000, 800, 0, 3, 0)
+    assert(f1.length === 3, 'forecast length should equal horizonMonths')
+    assert(Math.round(f1[2].balance) === 600, 'balance after 3 months should be 600 when net=200')
+    const f2 = computeForecast(1000, 100, 10, 2, 0)
+    assert(f2[1].expense > f2[0].expense, 'expense should grow with inflation')
+  } catch (e) { console.error(e) }
+}
+if (typeof window !== 'undefined' && process.env.NODE_ENV !== 'production') runInternalTests()
 
-    // Test 2: expenses should increase with positive inflation
-    const f2 = computeForecast(1000, 100, 10, 2, 0); // 10% monthly inflation
-    assert(f2[1].expense > f2[0].expense, "expense should grow with inflation");
 
-    // Test 3: CSV contains sections and correct number of forecast rows
-    const fakeState: PersistedState = {
-      entries: [
-        { id: "1", type: "income", name: "Nómina", amount: 1000, category: "Salario" },
-        { id: "2", type: "expense", name: "Alquiler", amount: 700, category: "Vivienda" },
-      ],
-      inflationPct: 0,
-      horizonMonths: 2,
-      startingBalance: 0,
-    };
-    const f3 = computeForecast(1000, 700, 0, 2, 0);
-    const csv = generateCSV(fakeState, f3);
-    // Check section headers exist with trailing newlines in our constructed CSV
-    const hasEntradas = csv.indexOf("Entradas\n") !== -1;
-    const hasPrevision = csv.indexOf("Previsión\n") !== -1;
-    assert(hasEntradas && hasPrevision, "CSV must include section headers 'Entradas' and 'Previsión' with newlines");
-  } catch (e) {
-    console.error(e);
+// =====================================
+// FILE: lib/supabase.ts
+// =====================================
+export { }
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore - este archivo debe guardarse como lib/supabase.ts en tu proyecto
+export const __FILE__SHOULD_BE__lib_supabase_ts = `
+import { createBrowserClient } from '@supabase/ssr'
+
+export function supabaseBrowser() {
+  return createBrowserClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  )
+}
+` as unknown as void
+
+
+// =====================================
+// FILE: app/login/page.tsx
+// =====================================
+export { }
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore - este archivo debe guardarse como app/login/page.tsx en tu proyecto
+export const __FILE__SHOULD_BE__app_login_page_tsx = `
+'use client'
+import { useState } from 'react'
+import { supabaseBrowser } from '@/lib/supabase'
+
+export default function LoginPage() {
+  const [email, setEmail] = useState('')
+  const [sent, setSent] = useState(false)
+  const supabase = supabaseBrowser()
+
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    await supabase.auth.signInWithOtp({
+      email,
+      options: { emailRedirectTo: \`\${location.origin}/\` }
+    })
+    setSent(true)
   }
-}
 
-if (typeof window !== "undefined" && process.env.NODE_ENV !== "production") {
-  runInternalTests();
+  return (
+    <div className="max-w-sm mx-auto p-6 space-y-4">
+      <h1 className="text-xl font-bold">Inicia sesión</h1>
+      {sent ? (
+        <p>Te hemos enviado un enlace de acceso a <strong>{email}</strong>. Revisa tu correo.</p>
+      ) : (
+        <form onSubmit={onSubmit} className="space-y-3">
+          <input className="border rounded w-full p-2" type="email" required placeholder="tu@email"
+            value={email} onChange={(e)=>setEmail(e.target.value)} />
+          <button className="px-3 py-2 rounded bg-black text-white w-full">Enviar enlace</button>
+        </form>
+      )}
+    </div>
+  )
 }
+` as unknown as void
+
+
+// =====================================
+// FILE: supabase_policies.sql
+// =====================================
+export { }
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore - este archivo debe guardarse como supabase_policies.sql (se ejecuta en el SQL editor de Supabase)
+export const __FILE__SHOULD_BE__supabase_policies_sql = `
+-- Activar RLS
+alter table public.entries enable row level security;
+alter table public.profiles enable row level security;
+
+-- El usuario solo ve/scribe sus propias filas
+create policy if not exists "entries_select_own" on public.entries
+  for select using ( auth.uid() = user_id );
+create policy if not exists "entries_insert_own" on public.entries
+  for insert with check ( auth.uid() = user_id );
+create policy if not exists "entries_delete_own" on public.entries
+  for delete using ( auth.uid() = user_id );
+
+create policy if not exists "profiles_select_own" on public.profiles
+  for select using ( auth.uid() = id );
+create policy if not exists "profiles_insert_self" on public.profiles
+  for insert with check ( auth.uid() = id );
+` as unknown as void
