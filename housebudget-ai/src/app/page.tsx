@@ -27,9 +27,7 @@ function currency(n: number) {
   return n.toLocaleString('es-ES', { style: 'currency', currency: 'EUR' })
 }
 
-function uid() {
-  return Math.random().toString(36).slice(2, 9)
-}
+function uid() { return Math.random().toString(36).slice(2, 9) }
 
 const DEFAULT_INCOMES: Entry[] = [
   { id: uid(), type: 'income', name: 'Nómina 1', amount: 1800, category: 'Salario' },
@@ -107,22 +105,17 @@ function generateCSV(state: PersistedState, forecast: { month: string; income: n
 }
 
 // -----------------------------
-// MAIN COMPONENT
+// MAIN
 // -----------------------------
 export default function HouseBudgetApp() {
   const [state, setState] = useState<PersistedState>(defaultState)
-  const [newEntry, setNewEntry] = useState<Omit<Entry, 'id'>>({
-    type: 'expense',
-    name: '',
-    amount: 0,
-    category: 'General',
-  })
+  const [newEntry, setNewEntry] = useState<Omit<Entry, 'id'>>({ type: 'expense', name: '', amount: 0, category: 'General' })
   const [userId, setUserId] = useState<string | null>(null)
-  const supabase = supabaseBrowser()
 
-  // --- AUTH ---
+  // Auth + Supabase client (solo en runtime)
   useEffect(() => {
     let mounted = true
+    const supabase = supabaseBrowser()
     ;(async () => {
       const { data } = await supabase.auth.getUser()
       if (mounted) setUserId(data.user?.id ?? null)
@@ -130,15 +123,13 @@ export default function HouseBudgetApp() {
     const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
       setUserId(session?.user?.id ?? null)
     })
-    return () => {
-      mounted = false
-      sub.subscription.unsubscribe()
-    }
-  }, [supabase])
+    return () => { mounted = false; sub.subscription.unsubscribe() }
+  }, [])
 
-  // --- LOAD ---
+  // Load entries
   const loadEntries = useCallback(async () => {
     if (userId) {
+      const supabase = supabaseBrowser()
       const { data, error } = await supabase
         .from('entries')
         .select('id, type, name, category, amount')
@@ -162,18 +153,18 @@ export default function HouseBudgetApp() {
       const raw = localStorage.getItem(STORAGE_KEY)
       if (raw) setState(JSON.parse(raw) as PersistedState)
     } catch {}
-  }, [userId, supabase])
+  }, [userId])
 
   useEffect(() => { loadEntries() }, [loadEntries])
 
-  // --- SAVE LOCAL (guest) ---
+  // Persist local (guest)
   useEffect(() => {
     if (!userId) {
       try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)) } catch {}
     }
   }, [state, userId])
 
-  // --- DERIVED VALUES ---
+  // Derived
   const incomes = useMemo(() => state.entries.filter(e => e.type === 'income'), [state.entries])
   const expenses = useMemo(() => state.entries.filter(e => e.type === 'expense'), [state.entries])
   const monthlyIncome = useMemo(() => incomes.reduce((s, e) => s + (e.amount || 0), 0), [incomes])
@@ -186,10 +177,11 @@ export default function HouseBudgetApp() {
   const total12mNet = useMemo(() => forecast.reduce((s, r) => s + r.net, 0), [forecast])
   const breakEvenMonth = useMemo(() => forecast.findIndex(r => r.balance < 0), [forecast])
 
-  // --- CRUD ---
+  // CRUD
   async function addEntry() {
     if (!newEntry.name || !isFinite(newEntry.amount)) return
     if (userId) {
+      const supabase = supabaseBrowser()
       const { error } = await supabase
         .from('entries')
         .insert({ user_id: userId, type: newEntry.type, name: newEntry.name, category: newEntry.category, amount: newEntry.amount })
@@ -198,16 +190,14 @@ export default function HouseBudgetApp() {
         await loadEntries()
       }
     } else {
-      setState(s => ({
-        ...s,
-        entries: [...s.entries, { ...newEntry, id: uid(), amount: Math.max(0, Number(newEntry.amount)) }],
-      }))
+      setState(s => ({ ...s, entries: [...s.entries, { ...newEntry, id: uid(), amount: Math.max(0, Number(newEntry.amount)) }] }))
       setNewEntry({ ...newEntry, name: '', amount: 0 })
     }
   }
 
   async function removeEntry(id: string) {
     if (userId) {
+      const supabase = supabaseBrowser()
       const { error } = await supabase.from('entries').delete().eq('id', id).eq('user_id', userId)
       if (!error) await loadEntries()
     } else {
@@ -222,10 +212,7 @@ export default function HouseBudgetApp() {
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
-    a.href = url
-    a.download = 'housebudget_forecast.csv'
-    a.click()
-    URL.revokeObjectURL(url)
+    a.href = url; a.download = 'housebudget_forecast.csv'; a.click(); URL.revokeObjectURL(url)
   }
 
   function tooltipCurrencyFormatter(value: ValueType): string {
@@ -241,14 +228,13 @@ export default function HouseBudgetApp() {
       const saved = JSON.parse(raw) as PersistedState
       if (!saved?.entries?.length) return
       const rows = saved.entries.map(e => ({ user_id: userId, type: e.type, name: e.name, category: e.category, amount: e.amount }))
+      const supabase = supabaseBrowser()
       const { error } = await supabase.from('entries').insert(rows)
       if (!error) await loadEntries()
     } catch {}
   }
 
-  // -----------------------------
-  // RENDER
-  // -----------------------------
+  // Render
   return (
     <div className="min-h-screen w-full bg-white px-4 md:px-8 py-8">
       <div className="max-w-6xl mx-auto space-y-6">
@@ -260,7 +246,7 @@ export default function HouseBudgetApp() {
                 <Button variant="outline" onClick={importFromLocal}>
                   <Upload className="w-4 h-4 mr-2" /> Importar locales
                 </Button>
-                <Button variant="outline" onClick={async () => { await supabase.auth.signOut() }}>
+                <Button variant="outline" onClick={async()=>{ const s=supabaseBrowser(); await s.auth.signOut() }}>
                   <LogOut className="w-4 h-4 mr-2" /> Salir
                 </Button>
               </>
@@ -278,9 +264,148 @@ export default function HouseBudgetApp() {
           </div>
         </header>
 
-        {/* Contenido principal (entradas, parámetros, gráfico, resumen) */}
-        {/* ... */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          {/* Entradas */}
+          <Card className="lg:col-span-2">
+            <CardHeader><CardTitle>Entradas mensuales</CardTitle></CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
+                <div>
+                  <Label>Tipo</Label>
+                  <Select value={newEntry.type} onValueChange={(v: string) => setNewEntry(n => ({ ...n, type: v as 'income' | 'expense' }))}>
+                    <SelectTrigger><SelectValue placeholder="Tipo" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="income">Ingreso</SelectItem>
+                      <SelectItem value="expense">Gasto</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="md:col-span-2">
+                  <Label>Nombre</Label>
+                  <Input value={newEntry.name} onChange={e => setNewEntry(n => ({ ...n, name: e.target.value }))} placeholder="Ej. Hipoteca / Nómina" />
+                </div>
+                <div>
+                  <Label>Categoría</Label>
+                  <Input value={newEntry.category} onChange={e => setNewEntry(n => ({ ...n, category: e.target.value }))} placeholder="Ej. Vivienda" />
+                </div>
+                <div>
+                  <Label>Importe (€)</Label>
+                  <Input type="number" inputMode="decimal" value={newEntry.amount} onChange={e => setNewEntry(n => ({ ...n, amount: Number(e.target.value) }))} />
+                </div>
+                <div className="md:col-span-5">
+                  <Button className="w-full" onClick={addEntry}>
+                    <Plus className="w-4 h-4 mr-2" /> Añadir
+                  </Button>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                {state.entries.length === 0 && (
+                  <p className="text-sm text-muted-foreground">Aún no hay entradas. Añade ingresos y gastos para comenzar.</p>
+                )}
+                {state.entries.map(e => (
+                  <div key={e.id} className="grid grid-cols-12 gap-2 items-center border rounded-xl p-3">
+                    <div className="col-span-2">
+                      <span className={`px-2 py-1 rounded-full text-xs font-semibold ${e.type === 'income' ? 'bg-green-100' : 'bg-red-100'}`}>
+                        {e.type === 'income' ? 'Ingreso' : 'Gasto'}
+                      </span>
+                    </div>
+                    <div className="col-span-4 font-medium">{e.name}</div>
+                    <div className="col-span-3 text-sm text-muted-foreground">{e.category}</div>
+                    <div className="col-span-2 text-right font-semibold">{currency(e.amount)}</div>
+                    <div className="col-span-1 text-right">
+                      <Button variant="ghost" size="icon" onClick={() => removeEntry(e.id)}>
+                        <Trash2 className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Parámetros */}
+          <Card>
+            <CardHeader><CardTitle>Parámetros</CardTitle></CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <Label>Saldo inicial (€)</Label>
+                <Input type="number" inputMode="decimal" value={state.startingBalance} onChange={e => setState(s => ({ ...s, startingBalance: Number(e.target.value) }))} />
+              </div>
+              <div className="space-y-2">
+                <Label>Inflación mensual esperada en gastos (%)</Label>
+                <Input type="number" inputMode="decimal" step={0.1} value={state.inflationPct} onChange={e => setState(s => ({ ...s, inflationPct: Number(e.target.value) }))} />
+                <p className="text-xs text-muted-foreground">0.2% ≈ 2.4% anual.</p>
+              </div>
+              <div className="space-y-2">
+                <Label>Horizonte (meses)</Label>
+                <Input type="number" inputMode="numeric" value={state.horizonMonths} onChange={e => setState(s => ({ ...s, horizonMonths: Math.max(1, Number(e.target.value)) }))} />
+              </div>
+              <div className="rounded-xl bg-slate-50 p-3 text-sm space-y-1">
+                <div className="flex justify-between"><span>Ingresos/mes</span><strong>{currency(monthlyIncome)}</strong></div>
+                <div className="flex justify-between"><span>Gastos/mes</span><strong>{currency(monthlyExpense)}</strong></div>
+                <div className="flex justify-between"><span>Neto/mes</span><strong className={monthlyNet>=0?'text-green-700':'text-red-700'}>{currency(monthlyNet)}</strong></div>
+                <div className="flex justify-between"><span>Neto 12 meses</span><strong className={total12mNet>=0?'text-green-700':'text-red-700'}>{currency(total12mNet)}</strong></div>
+                {breakEvenMonth >= 0 && (
+                  <div className="flex justify-between"><span>Mes en que el saldo cae <span className="italic">por debajo de 0</span></span><strong>{breakEvenMonth + 1}</strong></div>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Gráfica */}
+        <Card>
+          <CardHeader><CardTitle>Previsión (saldo acumulado)</CardTitle></CardHeader>
+          <CardContent>
+            <div className="h-72 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={forecast} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                  <XAxis dataKey="month" stroke="#374151" />
+                  <YAxis tickFormatter={(v) => v.toLocaleString('es-ES')} stroke="#374151" />
+                  <Tooltip formatter={tooltipCurrencyFormatter} />
+                  <Legend />
+                  <Line type="monotone" dataKey="income" name="Ingresos" strokeWidth={2} dot={false} stroke="#10b981" />
+                  <Line type="monotone" dataKey="expense" name="Gastos" strokeWidth={2} dot={false} stroke="#ef4444" />
+                  <Line type="monotone" dataKey="balance" name="Saldo" strokeWidth={3} dot={false} stroke="#3b82f6" />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Resumen */}
+        <Card>
+          <CardHeader><CardTitle>Resumen inteligente (explicación)</CardTitle></CardHeader>
+          <CardContent>
+            <SmartSummary forecast={forecast} monthlyIncome={monthlyIncome} monthlyExpense={monthlyExpense} inflationPct={state.inflationPct} />
+          </CardContent>
+        </Card>
+
+        <footer className="text-xs text-center text-muted-foreground pt-4">
+          Hecho con ❤️ por Héctor. Datos guardados {userId ? 'en la nube (Supabase)' : 'en este navegador'}.
+        </footer>
       </div>
+    </div>
+  )
+}
+
+function SmartSummary({
+  forecast, monthlyIncome, monthlyExpense, inflationPct
+}: {
+  forecast: { month: string; income: number; expense: number; net: number; balance: number }[]
+  monthlyIncome: number; monthlyExpense: number; inflationPct: number
+}) {
+  const first = forecast[0]
+  const last = forecast[forecast.length - 1]
+  const trend = last.balance >= 0
+    ? `Tu saldo acumulado se mantiene positivo tras ${forecast.length} meses.`
+    : `Ojo: tu saldo caería por debajo de 0 tras ${forecast.findIndex(r => r.balance < 0) + 1} meses.`
+  return (
+    <div className="space-y-2">
+      <p>Ingresos: <strong>{currency(monthlyIncome)}</strong>. Gastos: <strong>{currency(monthlyExpense)}</strong>. Inflación mensual: <strong>{inflationPct}%</strong>.</p>
+      <p>{trend} Saldo de <strong>{currency(first.balance)}</strong> a <strong>{currency(last.balance)}</strong>.</p>
     </div>
   )
 }
