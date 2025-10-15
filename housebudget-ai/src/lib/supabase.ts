@@ -6,9 +6,7 @@ export function supabaseBrowser() {
   const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 
   if (!url || !anon) {
-    // Te ayuda a depurar si faltan envs en runtime
     console.error('⚠️ Falta NEXT_PUBLIC_SUPABASE_URL o NEXT_PUBLIC_SUPABASE_ANON_KEY')
   }
-
   return createBrowserClient(url, anon)
 }

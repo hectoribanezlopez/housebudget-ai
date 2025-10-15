@@ -1,10 +1,6 @@
 // src/app/login/page.tsx
 'use client'
 
-export const dynamic = 'force-dynamic'
-export const revalidate = 0
-export const fetchCache = 'force-no-store'
-
 import { useState } from 'react'
 import { supabaseBrowser } from '@/lib/supabase'
 
@@ -43,9 +39,7 @@ export default function LoginPage() {
             value={email}
             onChange={(e)=>setEmail(e.target.value)}
           />
-          <button className="px-3 py-2 rounded bg-black text-white w-full">
-            Enviar enlace
-          </button>
+          <button className="px-3 py-2 rounded bg-black text-white w-full">Enviar enlace</button>
         </form>
       )}
     </div>
