@@ -7,12 +7,19 @@ export default function LoginPage() {
   const [email, setEmail] = useState('')
   const [sent, setSent] = useState(false)
   const supabase = supabaseBrowser()
+  
+function getSiteURL() {
+  // Usa variable en prod; cae a origin en dev
+  const fromEnv = process.env.NEXT_PUBLIC_SITE_URL
+  if (fromEnv) return fromEnv.replace(/\/+$/, '')
+  return window.location.origin
+}
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault()
    await supabase.auth.signInWithOtp({
   email,
-  options: { emailRedirectTo: `${location.origin}/auth/callback` } // <-- antes era '/'
+  options: { emailRedirectTo: `${getSiteURL()}/auth/callback` } // <-- antes era '/'
 })
     setSent(true)
   }
